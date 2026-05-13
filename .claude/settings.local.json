@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vite *)",
+      "Bash(npm run *)",
+      "Bash(mvn compile *)",
+      "Bash(kill 81798 81527)",
+      "Bash(mvn spring-boot:run -q)",
+      "Bash(ping -c 2 -t 3 192.168.100.168)",
+      "Bash(echo \"PID=$!\")",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(curl -s http://localhost:5173/src/styles.css)",
+      "Bash(pkill -f \"DazyHubApplication\")",
+      "Bash(pkill -f \"spring-boot:run\")",
+      "Bash(PGPASSWORD=cym1754544 psql -h 192.168.100.168 -p 5433 -U postgres -d dazyhub -c \"ALTER TABLE users RENAME COLUMN username TO email;\")",
+      "Bash(PGPASSWORD=cym1754544 psql -h 192.168.100.168 -p 5433 -U postgres -d dazyhub -c \"ALTER TABLE users RENAME CONSTRAINT uk_users_username TO uk_users_email;\")",
+      "Bash(PGPASSWORD=cym1754544 psql -h 192.168.100.168 -p 5433 -U postgres -d dazyhub -c \"\\\\d users\")",
+      "Bash(ssh -o ConnectTimeout=5 dazy@192.168.100.168 \"docker exec postgres psql -U postgres -d dazyhub -c \\\\\"ALTER TABLE users RENAME COLUMN username TO email;\\\\\"\")",
+      "Bash(sed -i '' 's/spring.jpa.hibernate.ddl-auto=update/spring.jpa.hibernate.ddl-auto=create/' src/main/resources/application.properties)",
+      "Bash(sed -i '' 's/spring.jpa.hibernate.ddl-auto=create/spring.jpa.hibernate.ddl-auto=update/' src/main/resources/application.properties)",
+      "Bash(curl -s -X POST http://localhost:8080/api/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"root@163.com\",\"password\":\"cym1754544\"}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(kill 92321 92289)",
+      "Read(//private/tmp/**)",
+      "Bash(lsof -ti:8080)",
+      "Bash(xargs kill -9)",
+      "Bash(curl -s http://localhost:8080/api/admin/users)",
+      "Bash(kill -9 93176)",
+      "Bash(pkill -9 -f \"dazyhub\")",
+      "Bash(pkill -9 -f \"DazyHubApplication\")",
+      "Bash(echo \"started PID $!\")",
+      "Bash(nohup npx vite --host 0.0.0.0)",
+      "Bash(echo \"started $!\")",
+      "Bash(curl -s http://localhost:8080/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"root@163.com\",\"password\":\"cym1754544\"}')",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(kill 93635 93555)",
+      "Bash(git add *)"
+    ]
+  }
+}

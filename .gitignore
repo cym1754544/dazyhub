@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+backend/target/
+uploads/
+backend/uploads/
+.DS_Store
+*.log
+.claude/worktrees/
