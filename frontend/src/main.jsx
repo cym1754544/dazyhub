@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { createRoot } from "react-dom/client";
 import {
   Camera,
-  HelpCircle,
+  GripVertical,
   KeyRound,
   LogIn,
   LogOut,
@@ -125,6 +125,7 @@ const starterShortcuts = [
 ];
 
 const themes = [
+  { id: "white", name: "纯白", colors: ["#f9fafb", "#d1d5db", "#9ca3af"] },
   { id: "warm", name: "暖白", colors: ["#fff9ed", "#2f7890", "#5fa87b"] },
   { id: "graphite", name: "石墨", colors: ["#f8f6f1", "#4b5d5b", "#b18a5b"] },
   { id: "sage", name: "松石", colors: ["#fbfbf4", "#387562", "#c79658"] },
@@ -141,7 +142,7 @@ const searchEngines = [
   },
   {
     id: "baidu",
-    name: "百度",
+    name: "Baidu",
     iconUrl: "https://www.google.com/s2/favicons?domain=baidu.com&sz=64",
     searchUrl: (value) => `https://www.baidu.com/s?wd=${encodeURIComponent(value)}`,
   },
@@ -212,6 +213,7 @@ function App() {
   const [tagSize, setTagSize] = useState("short");
   const [theme, setTheme] = useState("warm");
   const [searchEngineId, setSearchEngineId] = useState("google");
+  const [toast, setToast] = useState(null);
   const [isSearchEngineOpen, setIsSearchEngineOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
@@ -251,6 +253,12 @@ function App() {
         }
       });
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 1500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   useLayoutEffect(() => {
     const cards = document.querySelectorAll("[data-site-id]");
@@ -399,6 +407,7 @@ function App() {
     setCurrentUser(data.user);
     applyUserSettings(data.user);
     setAuthMode(null);
+    setToast(authMode === "login" ? "登录成功" : "注册成功");
   };
 
   const handleTagSizeChange = (nextTagSize) => {
@@ -432,6 +441,7 @@ function App() {
     });
     setActiveGroup(site.group || "all");
     setAddSiteGroup(null);
+    setToast("网站已添加");
   };
 
   const handleUpdateSite = (updatedSite) => {
@@ -439,29 +449,42 @@ function App() {
       site.id === updatedSite.id ? { ...site, ...updatedSite } : site
     )));
     setEditingSite(null);
+    setToast("网站已更新");
   };
 
   const handleDeleteSite = (siteId) => {
     setSites((currentSites) => currentSites.filter((site) => site.id !== siteId));
+    setToast("网站已删除");
   };
 
-  const handleRenameGroup = ({ id, name }) => {
+  const handleRenameGroup = ({ id, name, color }) => {
     if (id === "ungrouped") {
       setUngroupedName(name);
     } else {
       setSiteGroups((currentGroups) => currentGroups.map((group) => (
-        group.id === id ? { ...group, name } : group
+        group.id === id ? { ...group, name, color: color || group.color } : group
       )));
     }
     setEditingGroup(null);
+    setToast("分组已更新");
   };
 
   const totalSites = sites.length;
 
   return (
     <div className="app" data-theme={theme}>
+      {toast && (
+        <div className="success-toast">
+          <div className="toast-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 12 9 17 20 6" />
+            </svg>
+          </div>
+          <span className="toast-label">{toast}</span>
+        </div>
+      )}
       {isAdminOpen && currentUser?.role === "admin" ? (
-        <AdminPage onClose={() => setIsAdminOpen(false)} />
+        <AdminPage onClose={() => setIsAdminOpen(false)} onSuccess={setToast} />
       ) : (
         <>
           <aside className="sidebar">
@@ -470,9 +493,9 @@ function App() {
               type="button"
               onClick={() => (currentUser ? setIsProfileOpen(true) : setAuthMode("login"))}
             >
-              {currentUser ? <Avatar user={currentUser} size="brand" /> : <div className="brand-mark guest"><HelpCircle /></div>}
+              {currentUser ? <Avatar user={currentUser} size="brand" /> : <div className="brand-mark guest"><img src="/wenhao.jpeg" alt="" /></div>}
               <div className="brand-name">
-                <strong>{currentUser ? currentUser.displayName : "请登录"}</strong>
+                <strong>{currentUser ? currentUser.displayName : "登录"}</strong>
                 {currentUser && <span>{currentUser.signature || (currentUser.email || "").split("@")[0]}</span>}
               </div>
             </button>
@@ -535,6 +558,7 @@ function App() {
 
           <main className="main">
             <header className="topbar">
+
               <form className="search" onSubmit={handleSearchSubmit}>
             <div
               className="search-engine-picker"
@@ -607,6 +631,7 @@ function App() {
             >
               {isEditing ? <Save /> : <Pencil />}
             </button>
+
           </div>
         </header>
 
@@ -654,6 +679,7 @@ function App() {
           user={currentUser}
           onClose={() => setIsProfileOpen(false)}
           onUserChange={setCurrentUser}
+          onSuccess={setToast}
         />
       )}
       {addSiteGroup && (
@@ -709,6 +735,7 @@ function App() {
                     aria-label={themeOption.name}
                     title={themeOption.name}
                     onClick={() => handleThemeChange(themeOption.id)}
+                    data-name={themeOption.name}
                   >
                     <span style={{ background: themeOption.colors[1] }} />
                   </button>
@@ -829,7 +856,9 @@ function AuthDialog({ mode, loading, onModeChange, onClose, onSubmit }) {
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <form className="modal auth-modal" onSubmit={handleSubmit}>
+      <form className="modal auth-modal" onSubmit={handleSubmit} autoComplete="off">
+        <input type="email" autoComplete="email" style={{display:"none"}} tabIndex={-1} readOnly />
+        <input type="password" autoComplete="current-password" style={{display:"none"}} tabIndex={-1} readOnly />
         <div className="modal-header">
           <div>
             <p className="eyebrow">DazyHub Account</p>
@@ -872,6 +901,7 @@ function AuthDialog({ mode, loading, onModeChange, onClose, onSubmit }) {
           <span>密码</span>
           <input
             value={form.password}
+            autoComplete={isRegister ? "new-password" : "current-password"}
             onChange={(event) => setForm({ ...form, password: event.target.value })}
             type="password"
             required
@@ -888,6 +918,7 @@ function AuthDialog({ mode, loading, onModeChange, onClose, onSubmit }) {
                 value={form.confirmPassword}
                 onChange={(event) => setForm({ ...form, confirmPassword: event.target.value })}
                 type="password"
+                autoComplete="new-password"
                 required
                 minLength={6}
                 maxLength={120}
@@ -936,7 +967,7 @@ function AuthDialog({ mode, loading, onModeChange, onClose, onSubmit }) {
   );
 }
 
-function ProfileDialog({ user, onClose, onUserChange }) {
+function ProfileDialog({ user, onClose, onUserChange, onSuccess }) {
   const [displayName, setDisplayName] = useState(user.displayName);
   const [signature, setSignature] = useState(user.signature || "");
   const [message, setMessage] = useState("");
@@ -953,7 +984,7 @@ function ProfileDialog({ user, onClose, onUserChange }) {
     try {
       const updated = await updateProfile({ displayName, signature });
       onUserChange(updated);
-      setMessage("资料已保存");
+      onSuccess("资料已保存");
       onClose();
     } catch (requestError) {
       setError(requestError.message);
@@ -981,7 +1012,7 @@ function ProfileDialog({ user, onClose, onUserChange }) {
     try {
       const result = await uploadAvatar(new File([blob], "avatar.jpg", { type: "image/jpeg" }));
       onUserChange({ ...user, displayName, signature, avatarUrl: result.avatarUrl });
-      setMessage("头像已更新");
+      onSuccess("头像已更新");
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -1371,6 +1402,7 @@ function SiteEditorDialog({ groups: siteGroups, initialGroup = "ungrouped", mode
 
 function GroupEditorDialog({ group, onClose, onSubmit }) {
   const [name, setName] = useState(group.name);
+  const [color, setColor] = useState(group.color || "#5fa87b");
   const [error, setError] = useState("");
 
   const handleSubmit = (event) => {
@@ -1382,7 +1414,7 @@ function GroupEditorDialog({ group, onClose, onSubmit }) {
       return;
     }
 
-    onSubmit({ id: group.id, name: nextName });
+    onSubmit({ id: group.id, name: nextName, color });
   };
 
   return (
@@ -1408,6 +1440,18 @@ function GroupEditorDialog({ group, onClose, onSubmit }) {
             required
             placeholder="请输入分组名称"
           />
+        </label>
+
+        <label className="field">
+          <span>分组颜色</span>
+          <div className="color-picker-row">
+            <input
+              type="color"
+              value={color}
+              onChange={(event) => setColor(event.target.value)}
+            />
+            <span className="color-hex">{color}</span>
+          </div>
         </label>
 
         {error && <div className="form-error">{error}</div>}
@@ -1555,67 +1599,82 @@ function SiteCard({
 }) {
   const isShort = tagSize === "short";
   const href = /^https?:\/\//.test(site.url) ? site.url : `https://${site.url}`;
+  const [contextMenu, setContextMenu] = useState(null);
+  const cardRef = useRef(null);
+
   const stopCardAction = (event) => {
     event.preventDefault();
     event.stopPropagation();
   };
 
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY });
+  };
+
+  const closeContextMenu = () => setContextMenu(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleDown = (e) => {
+      if (!e.target.closest(".context-menu")) closeContextMenu();
+    };
+    const handleScroll = () => closeContextMenu();
+    document.addEventListener("mousedown", handleDown);
+    document.addEventListener("scroll", handleScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", handleDown);
+      document.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [contextMenu]);
+
   return (
-    <a
-      className={`${isShort ? "shortcut-card" : "site-card"} ${isEditing ? "can-drag" : ""} ${isDragging ? "is-dragging" : ""} ${isSwapTarget ? "is-swap-target" : ""}`}
-      data-site-id={site.id}
-      href={isEditing ? undefined : href}
-      target={isEditing ? undefined : "_blank"}
-      rel={isEditing ? undefined : "noreferrer"}
-      draggable={isEditing}
-      onDragStart={(event) => onDragStart(event, site)}
-      onDragOver={(event) => onDragOver(event, site.group, site.id)}
-      onDragEnd={onDragEnd}
-      onDrop={(event) => onDrop(event, site.group, site.id)}
-    >
-      {isEditing && (
-        <div className="site-card-actions">
-          <button
-            className="danger"
-            type="button"
-            title={`删除${site.name}`}
-            aria-label={`删除${site.name}`}
-            onMouseDown={stopCardAction}
-            onClick={(event) => {
-              stopCardAction(event);
-              onDelete(site.id);
-            }}
-          >
-            <X />
-          </button>
-          <button
-            type="button"
-            title={`编辑${site.name}`}
-            aria-label={`编辑${site.name}`}
-            onMouseDown={stopCardAction}
-            onClick={(event) => {
-              stopCardAction(event);
-              onEdit(site);
-            }}
-          >
-            <Pencil />
-          </button>
-        </div>
-      )}
-      <SiteIcon site={site} />
-      {isShort ? (
-        <strong>{site.name}</strong>
-      ) : (
-        <div className="site-name">
+    <>
+      <a
+        ref={cardRef}
+        className={`${isShort ? "shortcut-card" : "site-card"} ${isEditing ? "can-drag" : ""} ${isDragging ? "is-dragging" : ""} ${isSwapTarget ? "is-swap-target" : ""}`}
+        data-site-id={site.id}
+        href={isEditing ? undefined : href}
+        target={isEditing ? undefined : "_blank"}
+        rel={isEditing ? undefined : "noreferrer"}
+        draggable={isEditing}
+        onDragStart={(event) => onDragStart(event, site)}
+        onDragOver={(event) => onDragOver(event, site.group, site.id)}
+        onDragEnd={onDragEnd}
+        onDrop={(event) => onDrop(event, site.group, site.id)}
+        onContextMenu={handleContextMenu}
+      >
+        {isEditing && (
+          <div className="site-card-move-indicator">
+            <GripVertical />
+          </div>
+        )}
+        <SiteIcon site={site} />
+        {isShort ? (
           <strong>{site.name}</strong>
-          <span>{site.url}</span>
+        ) : (
+          <div className="site-name">
+            <strong>{site.name}</strong>
+            <span>{site.url}</span>
+          </div>
+        )}
+      </a>
+      {contextMenu && (
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={stopCardAction} onClick={stopCardAction}>
+          <button type="button" onClick={() => { onEdit(site); closeContextMenu(); }}>
+            <Pencil /> 编辑
+          </button>
+          <button type="button" className="danger" onClick={() => { onDelete(site.id); closeContextMenu(); }}>
+            <Trash2 /> 删除
+          </button>
         </div>
       )}
-    </a>
+    </>
   );
 }
 
-function AdminPage({ onClose }) {
+function AdminPage({ onClose, onSuccess }) {
   const tabs = [
     { id: "users", label: "用户管理", icon: <Shield /> },
     { id: "email", label: "邮件配置", icon: <Mail /> },
@@ -1626,7 +1685,6 @@ function AdminPage({ onClose }) {
   const [emailConfig, setEmailConfig] = useState(null);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailError, setEmailError] = useState("");
-  const [emailSaved, setEmailSaved] = useState(false);
 
   useEffect(() => {
     if (activeTab === "email") {
@@ -1642,12 +1700,10 @@ function AdminPage({ onClose }) {
     event.preventDefault();
     setEmailLoading(true);
     setEmailError("");
-    setEmailSaved(false);
     try {
       const updated = await updateEmailConfig(emailConfig);
       setEmailConfig(updated);
-      setEmailSaved(true);
-      setTimeout(() => setEmailSaved(false), 2000);
+      onSuccess("邮件配置已保存");
     } catch (e) {
       setEmailError(e.message);
     } finally {
@@ -1699,6 +1755,7 @@ function AdminPage({ onClose }) {
       const updated = await updateUser(editingUser.id, editForm);
       setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
       setEditingUser(null);
+      onSuccess("用户已更新");
     } catch (e) {
       setEditError(e.message);
     } finally {
@@ -1711,6 +1768,7 @@ function AdminPage({ onClose }) {
     try {
       await deleteUser(user.id);
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
+      onSuccess("用户已删除");
     } catch (e) {
       setUserError(e.message);
     }
@@ -1721,6 +1779,7 @@ function AdminPage({ onClose }) {
     try {
       const result = await resetUserPassword(user.id);
       setResetMsg(`新密码：${result.password}`);
+      onSuccess("密码已重置");
       setTimeout(() => setResetMsg(""), 10000);
     } catch (e) {
       setUserError(e.message);
@@ -1816,7 +1875,6 @@ function AdminPage({ onClose }) {
                     <span>{emailLoading ? "保存中..." : "保存配置"}</span>
                   </button>
                   {emailError && <span className="field-hint">{emailError}</span>}
-                  {emailSaved && <span className="admin-ok">已保存</span>}
                 </div>
               </form>
             )}
