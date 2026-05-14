@@ -119,3 +119,10 @@ export async function resetUserPassword(id) {
     method: "POST",
   });
 }
+
+export async function changePassword(oldPassword, newPassword) {
+  return apiRequest("/api/me/password", {
+    method: "POST",
+    body: JSON.stringify({ oldPassword, newPassword }),
+  });
+}

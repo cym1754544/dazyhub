@@ -9,7 +9,12 @@ public record UserResponse(
     String avatarUrl,
     String tagSize,
     String theme,
-    String searchEngine
+    String searchEngine,
+    String sitesJson,
+    String siteGroupsJson,
+    String ungroupedName,
+    String activeGroup,
+    Boolean confirmDelete
 ) {
   public static UserResponse from(User user) {
     return new UserResponse(
@@ -21,7 +26,12 @@ public record UserResponse(
         user.getAvatarUrl(),
         user.getTagSize(),
         user.getTheme(),
-        user.getSearchEngine()
+        user.getSearchEngine(),
+        user.getSitesJson(),
+        user.getSiteGroupsJson(),
+        user.getUngroupedName(),
+        user.getActiveGroup(),
+        user.getConfirmDelete()
     );
   }
 }

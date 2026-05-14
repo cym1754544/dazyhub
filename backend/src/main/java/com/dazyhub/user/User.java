@@ -45,6 +45,21 @@ public class User {
   @Column(name = "search_engine", length = 24)
   private String searchEngine = "google";
 
+  @Column(name = "sites_json", columnDefinition = "text")
+  private String sitesJson;
+
+  @Column(name = "site_groups_json", columnDefinition = "text")
+  private String siteGroupsJson;
+
+  @Column(name = "ungrouped_name", length = 40)
+  private String ungroupedName = "未分组";
+
+  @Column(name = "active_group", length = 80)
+  private String activeGroup = "all";
+
+  @Column(name = "confirm_delete")
+  private Boolean confirmDelete = true;
+
   @Column(name = "created_at", nullable = false, updatable = false)
   private Instant createdAt;
 
@@ -95,4 +110,19 @@ public class User {
 
   public String getSearchEngine() { return searchEngine == null ? "google" : searchEngine; }
   public void setSearchEngine(String searchEngine) { this.searchEngine = searchEngine; }
+
+  public String getSitesJson() { return sitesJson; }
+  public void setSitesJson(String sitesJson) { this.sitesJson = sitesJson; }
+
+  public String getSiteGroupsJson() { return siteGroupsJson; }
+  public void setSiteGroupsJson(String siteGroupsJson) { this.siteGroupsJson = siteGroupsJson; }
+
+  public String getUngroupedName() { return ungroupedName == null ? "未分组" : ungroupedName; }
+  public void setUngroupedName(String ungroupedName) { this.ungroupedName = ungroupedName; }
+
+  public String getActiveGroup() { return activeGroup == null ? "all" : activeGroup; }
+  public void setActiveGroup(String activeGroup) { this.activeGroup = activeGroup; }
+
+  public Boolean getConfirmDelete() { return confirmDelete == null ? true : confirmDelete; }
+  public void setConfirmDelete(Boolean confirmDelete) { this.confirmDelete = confirmDelete; }
 }

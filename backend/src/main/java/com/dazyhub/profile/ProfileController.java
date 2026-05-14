@@ -15,6 +15,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -32,14 +33,17 @@ public class ProfileController {
   private static final Set<String> ALLOWED_EXTENSIONS = Set.of("jpg", "jpeg", "png", "webp");
   private static final Set<String> ALLOWED_TYPES = Set.of("image/jpeg", "image/png", "image/webp");
   private static final Set<String> ALLOWED_TAG_SIZES = Set.of("short", "long");
-  private static final Set<String> ALLOWED_THEMES = Set.of("warm", "graphite", "sage", "navy", "rose");
+  private static final Set<String> ALLOWED_THEMES = Set.of("warm", "white", "dark", "rose");
   private static final Set<String> ALLOWED_SEARCH_ENGINES = Set.of("google", "baidu", "bing");
+  private static final int MAX_SETTINGS_JSON_LENGTH = 200_000;
 
   private final UserRepository userRepository;
+  private final PasswordEncoder passwordEncoder;
   private final Path uploadDir;
 
-  public ProfileController(UserRepository userRepository, @Value("${dazyhub.upload-dir}") String uploadDir) {
+  public ProfileController(UserRepository userRepository, PasswordEncoder passwordEncoder, @Value("${dazyhub.upload-dir}") String uploadDir) {
     this.userRepository = userRepository;
+    this.passwordEncoder = passwordEncoder;
     this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
   }
 
@@ -77,7 +81,43 @@ public class ProfileController {
     if (request.searchEngine() != null) {
       user.setSearchEngine(validateOption(request.searchEngine(), ALLOWED_SEARCH_ENGINES, "搜索引擎无效"));
     }
+    if (request.sitesJson() != null) {
+      user.setSitesJson(validateJsonPayload(request.sitesJson(), "网站配置过大"));
+    }
+    if (request.siteGroupsJson() != null) {
+      user.setSiteGroupsJson(validateJsonPayload(request.siteGroupsJson(), "分组配置过大"));
+    }
+    if (request.ungroupedName() != null) {
+      String name = request.ungroupedName().trim();
+      user.setUngroupedName(name.isEmpty() ? "未分组" : name.substring(0, Math.min(name.length(), 40)));
+    }
+    if (request.activeGroup() != null) {
+      String activeGroup = request.activeGroup().trim();
+      user.setActiveGroup(activeGroup.isEmpty() ? "all" : activeGroup.substring(0, Math.min(activeGroup.length(), 80)));
+    }
+    if (request.confirmDelete() != null) {
+      user.setConfirmDelete(request.confirmDelete());
+    }
     return UserResponse.from(userRepository.save(user));
+  }
+
+  @PostMapping("/password")
+  public Map<String, String> changePassword(
+      @AuthenticationPrincipal User user,
+      @RequestBody ChangePasswordRequest request
+  ) {
+    if (request.oldPassword() == null || request.oldPassword().length() < 6) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "旧密码格式无效");
+    }
+    if (request.newPassword() == null || request.newPassword().length() < 6) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "新密码长度至少6位");
+    }
+    if (!passwordEncoder.matches(request.oldPassword(), user.getPasswordHash())) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "旧密码错误");
+    }
+    user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+    userRepository.save(user);
+    return Map.of("message", "密码已更新");
   }
 
   @PostMapping("/avatar")
@@ -129,5 +169,12 @@ public class ProfileController {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
     }
     return normalized;
+  }
+
+  private String validateJsonPayload(String value, String message) {
+    if (value.length() > MAX_SETTINGS_JSON_LENGTH) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+    }
+    return value;
   }
 }

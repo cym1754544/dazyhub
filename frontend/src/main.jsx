@@ -2,11 +2,14 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { createRoot } from "react-dom/client";
 import {
   Camera,
-  GripVertical,
+  FolderPlus,
+  Folder,
+  FolderOpen,
   KeyRound,
   LogIn,
   LogOut,
   Mail,
+  Menu,
   Pencil,
   Plus,
   Save,
@@ -16,10 +19,12 @@ import {
   Sparkles,
   Trash2,
   ChevronDown,
+  ChevronRight,
   X,
 } from "lucide-react";
 import {
   clearToken,
+  changePassword,
   deleteUser,
   fetchMe,
   fetchUsers,
@@ -39,6 +44,7 @@ import {
 import "./styles.css";
 
 const initialGroups = [
+  { id: "ungrouped", name: "未分组", color: "#2f7890" },
   { id: "work", name: "常用入口", color: "#f0a45e" },
   { id: "dev", name: "AI 与开发", color: "#31485a" },
   { id: "home", name: "效率工具", color: "#5fa87b" },
@@ -126,10 +132,8 @@ const starterShortcuts = [
 
 const themes = [
   { id: "white", name: "纯白", colors: ["#f9fafb", "#d1d5db", "#9ca3af"] },
+  { id: "dark", name: "深色", colors: ["#1a1b2e", "#1e3a5f", "#f0a45e"] },
   { id: "warm", name: "暖白", colors: ["#fff9ed", "#2f7890", "#5fa87b"] },
-  { id: "graphite", name: "石墨", colors: ["#f8f6f1", "#4b5d5b", "#b18a5b"] },
-  { id: "sage", name: "松石", colors: ["#fbfbf4", "#387562", "#c79658"] },
-  { id: "navy", name: "海蓝", colors: ["#faf8f0", "#2d6486", "#d39a58"] },
   { id: "rose", name: "玫瑰", colors: ["#fff9f2", "#a75b64", "#c9915c"] },
 ];
 
@@ -179,29 +183,135 @@ function normalize(value) {
   return value.trim().toLowerCase();
 }
 
-function moveItem(items, draggedId, targetGroup, targetId) {
+function moveItem(items, draggedId, targetGroup, targetId, placement = "before") {
   if (!targetId || draggedId === targetId) return items;
 
-  const draggedIndex = items.findIndex((item) => item.id === draggedId);
-  const targetIndex = items.findIndex((item) => item.id === targetId && item.group === targetGroup);
+  const dragged = items.find((item) => item.id === draggedId);
 
-  if (draggedIndex === -1 || targetIndex === -1) return items;
+  if (!dragged) return items;
 
-  const next = [...items];
-  const [dragged] = next.splice(draggedIndex, 1);
-  next.splice(targetIndex, 0, { ...dragged, group: targetGroup });
+  const next = items.filter((item) => item.id !== draggedId);
+  const targetIndex = next.findIndex((item) => item.id === targetId && item.group === targetGroup);
+
+  if (targetIndex === -1) return items;
+
+  next.splice(placement === "after" ? targetIndex + 1 : targetIndex, 0, { ...dragged, group: targetGroup });
   return next;
 }
 
-const DRAG_REORDER_COOLDOWN_MS = 240;
+function moveItemToGroupEnd(items, draggedId, targetGroup) {
+  const dragged = items.find((item) => item.id === draggedId);
+
+  if (!dragged) return items;
+
+  const groupItems = items.filter((item) => item.group === targetGroup);
+  if (dragged.group === targetGroup && groupItems[groupItems.length - 1]?.id === draggedId) return items;
+
+  const next = items.filter((item) => item.id !== draggedId);
+  const insertAfter = next.reduce((lastIndex, item, index) => (
+    item.group === targetGroup ? index : lastIndex
+  ), -1);
+
+  next.splice(insertAfter + 1, 0, { ...dragged, group: targetGroup });
+  return next;
+}
+
+function parseSettingsJson(value, fallback) {
+  if (!value) return fallback;
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeGroups(groups) {
+  const source = Array.isArray(groups) && groups.length ? groups : initialGroups;
+  const seen = new Set();
+
+  return source
+    .filter((group) => group?.id && !seen.has(group.id) && group.id !== "all")
+    .map((group) => {
+      seen.add(group.id);
+      return {
+        ...group,
+        name: group.name || "未命名文件夹",
+        color: group.color || "#5fa87b",
+        parentId: group.parentId || null,
+        collapsed: Boolean(group.collapsed),
+      };
+    });
+}
+
+function collectGroupDescendants(groups, groupId) {
+  const descendants = new Set();
+  const visit = (id) => {
+    groups
+      .filter((group) => group.parentId === id)
+      .forEach((child) => {
+        if (descendants.has(child.id)) return;
+        descendants.add(child.id);
+        visit(child.id);
+      });
+  };
+
+  visit(groupId);
+  return descendants;
+}
+
+function buildFolderTree(groups) {
+  const byParent = groups.reduce((map, group) => {
+    const parentId = group.parentId || "root";
+    if (!map.has(parentId)) map.set(parentId, []);
+    map.get(parentId).push(group);
+    return map;
+  }, new Map());
+
+  const build = (parentId = "root", depth = 0) => (byParent.get(parentId) || []).map((group) => ({
+    ...group,
+    depth,
+    children: build(group.id, depth + 1),
+  }));
+
+  return build();
+}
+
+function flattenFolderTree(nodes) {
+  return nodes.flatMap((node) => [
+    node,
+    ...(node.collapsed ? [] : flattenFolderTree(node.children || [])),
+  ]);
+}
+
+const DRAG_REORDER_COOLDOWN_MS = 320;
+const CARD_FLIP_DURATION_MS = 420;
+const CONTEXT_MENU_WIDTH = 172;
+const CONTEXT_MENU_HEIGHT = 112;
+const GROUP_REORDER_COOLDOWN_MS = 800;
+
+function menuPosition(clientX, clientY, width = CONTEXT_MENU_WIDTH, height = CONTEXT_MENU_HEIGHT) {
+  const margin = 10;
+  const maxX = window.innerWidth - width - margin;
+  const maxY = window.innerHeight - height - margin;
+
+  return {
+    x: Math.max(margin, Math.min(clientX, maxX)),
+    y: Math.max(margin, Math.min(clientY, maxY)),
+  };
+}
+
+function hasDragType(event, type) {
+  return Array.from(event.dataTransfer?.types || []).includes(type);
+}
 
 function App() {
   const [sites, setSites] = useState([...starterShortcuts, ...starterSites]);
   const [siteGroups, setSiteGroups] = useState(initialGroups);
-  const [ungroupedName, setUngroupedName] = useState("未分组");
   const [activeGroup, setActiveGroup] = useState("all");
+  const [allGroupCollapsed, setAllGroupCollapsed] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isEditing, setIsEditing] = useState(false);
   const [dragState, setDragState] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [authMode, setAuthMode] = useState(null);
@@ -209,31 +319,116 @@ function App() {
   const [addSiteGroup, setAddSiteGroup] = useState(null);
   const [editingSite, setEditingSite] = useState(null);
   const [editingGroup, setEditingGroup] = useState(null);
+  const [addingGroup, setAddingGroup] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
-  const [tagSize, setTagSize] = useState("short");
-  const [theme, setTheme] = useState("warm");
-  const [searchEngineId, setSearchEngineId] = useState("google");
+  const [tagSize, setTagSize] = useState(() => localStorage.getItem("dazyhub_tagSize") || "short");
+  const [theme, setTheme] = useState(() => localStorage.getItem("dazyhub_theme") || "warm");
+  const [searchEngineId, setSearchEngineId] = useState(() => localStorage.getItem("dazyhub_searchEngine") || "google");
+  const [confirmDelete, setConfirmDelete] = useState(() => localStorage.getItem("dazyhub_confirmDelete") !== "false");
   const [toast, setToast] = useState(null);
   const [isSearchEngineOpen, setIsSearchEngineOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [isPasswordChangeOpen, setIsPasswordChangeOpen] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [contentContextMenu, setContentContextMenu] = useState(null);
+  const [groupDragState, setGroupDragState] = useState(null);
   const cardRectsRef = useRef(new Map());
-  const lastDragMoveRef = useRef({ targetId: null, movedAt: 0 });
-  const lastReorderRef = useRef({ at: 0, targetId: null });
+  const groupRectsRef = useRef(new Map());
+  const lastDragMoveRef = useRef({ targetId: null, placement: null, movedAt: 0 });
+  const lastGroupReorderRef = useRef({ at: 0, targetId: null });
+  const skipNextCardAnimationRef = useRef(false);
+  const pendingDragScrollRef = useRef(null);
+  const latestSiteGroupsRef = useRef(siteGroups);
+  const latestSitesRef = useRef(sites);
+  const activeSiteDragRef = useRef(null);
+  const groupListRef = useRef(null);
 
-  const applyUserSettings = (user) => {
-    if (user.tagSize) setTagSize(user.tagSize);
-    if (user.theme) setTheme(user.theme);
-    if (user.searchEngine) setSearchEngineId(user.searchEngine);
+  const rememberDragScrollPosition = () => {
+    if (!activeSiteDragRef.current?.draggedId) return;
+    pendingDragScrollRef.current = { x: window.scrollX, y: window.scrollY };
   };
 
-  const persistSettings = async (payload) => {
+  const animateGroupReorder = (callback) => {
+    const container = groupListRef.current;
+    if (!container) {
+      callback();
+      return;
+    }
+    const items = container.querySelectorAll(".group-row");
+    const firstRects = new Map();
+    items.forEach((item) => {
+      const key = item.getAttribute("data-group-id") || item.querySelector(".group-button")?.textContent?.trim();
+      if (key) firstRects.set(key, item.getBoundingClientRect());
+    });
+
+    callback();
+
+    requestAnimationFrame(() => {
+      const newItems = container.querySelectorAll(".group-row");
+      newItems.forEach((item) => {
+        const key = item.getAttribute("data-group-id") || item.querySelector(".group-button")?.textContent?.trim();
+        const first = firstRects.get(key);
+        if (!first) return;
+        const last = item.getBoundingClientRect();
+        const deltaY = first.top - last.top;
+        if (deltaY !== 0) {
+          item.style.transform = `translateY(${deltaY}px)`;
+          item.style.transition = "none";
+          requestAnimationFrame(() => {
+            item.style.transition = "transform 0.5s cubic-bezier(0.4, 0, 0.2, 1)";
+            item.style.transform = "";
+          });
+        }
+      });
+    });
+  };
+
+  useEffect(() => {
+    latestSiteGroupsRef.current = siteGroups;
+  }, [siteGroups]);
+
+  useEffect(() => {
+    latestSitesRef.current = sites;
+  }, [sites]);
+
+  const applyUserSettings = (user) => {
+    if (user.tagSize) {
+      setTagSize(user.tagSize);
+      localStorage.setItem("dazyhub_tagSize", user.tagSize);
+    }
+    if (user.theme) {
+      setTheme(user.theme);
+      localStorage.setItem("dazyhub_theme", user.theme);
+    }
+    if (user.searchEngine) {
+      setSearchEngineId(user.searchEngine);
+      localStorage.setItem("dazyhub_searchEngine", user.searchEngine);
+    }
+    if (user.confirmDelete !== undefined && user.confirmDelete !== null) {
+      setConfirmDelete(user.confirmDelete);
+      localStorage.setItem("dazyhub_confirmDelete", user.confirmDelete ? "true" : "false");
+    }
+    setSites(parseSettingsJson(user.sitesJson, [...starterShortcuts, ...starterSites]));
+    setSiteGroups(normalizeGroups(parseSettingsJson(user.siteGroupsJson, initialGroups)));
+    if (user.activeGroup) setActiveGroup(user.activeGroup);
+  };
+
+  const buildPageSettings = (overrides = {}) => ({
+    sitesJson: JSON.stringify(overrides.sites || sites),
+    siteGroupsJson: JSON.stringify(overrides.siteGroups || siteGroups),
+    activeGroup: overrides.activeGroup || activeGroup,
+  });
+
+  const persistSettings = async (payload, options = {}) => {
     if (!currentUser) return;
 
     try {
-      const updatedUser = await updateSettings(payload);
+      const updatedUser = await updateSettings(options.includePage ? { ...buildPageSettings(options.page || {}), ...payload } : payload);
       setCurrentUser(updatedUser);
-      applyUserSettings(updatedUser);
+      if (!options.skipApply) {
+        applyUserSettings(updatedUser);
+      }
     } catch (error) {
       // Keep the UI responsive; a later refresh will restore the saved user settings.
     }
@@ -260,17 +455,62 @@ function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!dragState) return;
+
+    const clearDragState = () => {
+      lastDragMoveRef.current = { targetId: null, placement: null, movedAt: 0 };
+      skipNextCardAnimationRef.current = true;
+      setDragState(null);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") clearDragState();
+    };
+
+    window.addEventListener("dragend", clearDragState);
+    window.addEventListener("drop", clearDragState);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("dragend", clearDragState);
+      window.removeEventListener("drop", clearDragState);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [dragState]);
+
+  useEffect(() => {
+    if (!contentContextMenu) return;
+    const handleDown = (e) => {
+      if (!e.target.closest(".context-menu")) setContentContextMenu(null);
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") setContentContextMenu(null);
+    };
+    const handleScroll = () => setContentContextMenu(null);
+    document.addEventListener("mousedown", handleDown);
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("scroll", handleScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", handleDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [contentContextMenu]);
+
   useLayoutEffect(() => {
+    const pendingScroll = pendingDragScrollRef.current;
     const cards = document.querySelectorAll("[data-site-id]");
     const previousRects = cardRectsRef.current;
     const nextRects = new Map();
+    const skipAnimation = skipNextCardAnimationRef.current;
+
+    skipNextCardAnimationRef.current = false;
 
     cards.forEach((card) => {
       const rect = card.getBoundingClientRect();
       const previous = previousRects.get(card.dataset.siteId);
       nextRects.set(card.dataset.siteId, rect);
 
-      if (!previous) return;
+      if (!previous || skipAnimation || !dragState?.draggedId) return;
 
       const deltaX = previous.left - rect.left;
       const deltaY = previous.top - rect.top;
@@ -283,19 +523,27 @@ function App() {
           { transform: "translate(0, 0)" },
         ],
         {
-          duration: 340,
+          duration: CARD_FLIP_DURATION_MS,
           easing: "cubic-bezier(.22, 1, .36, 1)",
         },
       );
     });
 
     cardRectsRef.current = nextRects;
+
+    if (pendingScroll && activeSiteDragRef.current?.draggedId) {
+      window.scrollTo(pendingScroll.x, pendingScroll.y);
+      requestAnimationFrame(() => {
+        window.scrollTo(pendingScroll.x, pendingScroll.y);
+        if (pendingDragScrollRef.current === pendingScroll) pendingDragScrollRef.current = null;
+      });
+    } else {
+      pendingDragScrollRef.current = null;
+    }
   }, [sites]);
 
   const filteredSections = useMemo(() => {
-    const allGroups = [{ id: "ungrouped", name: ungroupedName, color: "#2f7890" }, ...siteGroups];
-
-    return allGroups
+    return siteGroups
       .map((group) => {
         const items = sites.filter((site) => {
           const inGroup = site.group === group.id;
@@ -305,15 +553,47 @@ function App() {
 
         return { ...group, items };
       })
-      .filter((section) => section.items.length > 0 || isEditing);
-  }, [activeGroup, isEditing, siteGroups, sites, ungroupedName]);
+      .filter((section) => section.items.length > 0 || activeGroup === section.id);
+  }, [activeGroup, siteGroups, sites]);
 
-  const groupCounts = useMemo(() => {
-    return siteGroups.reduce((counts, group) => {
-      counts[group.id] = sites.filter((site) => site.group === group.id).length;
-      return counts;
-    }, {});
-  }, [siteGroups, sites]);
+  const folderTree = useMemo(() => buildFolderTree(siteGroups), [siteGroups]);
+  const visibleFolders = useMemo(() => flattenFolderTree(folderTree), [folderTree]);
+  const foldersUnderAll = useMemo(() => visibleFolders.map((group) => ({
+    ...group,
+    displayDepth: group.depth + 1,
+  })), [visibleFolders]);
+
+  useLayoutEffect(() => {
+    const groups = document.querySelectorAll("[data-group-section-id]");
+    const previousRects = groupRectsRef.current;
+    const nextRects = new Map();
+
+    groups.forEach((group) => {
+      const rect = group.getBoundingClientRect();
+      const previous = previousRects.get(group.dataset.groupSectionId);
+      nextRects.set(group.dataset.groupSectionId, rect);
+
+      if (!previous) return;
+
+      const deltaX = previous.left - rect.left;
+      const deltaY = previous.top - rect.top;
+
+      if (!deltaX && !deltaY) return;
+
+      group.animate(
+        [
+          { transform: `translate(${deltaX}px, ${deltaY}px)` },
+          { transform: "translate(0, 0)" },
+        ],
+        {
+          duration: 420,
+          easing: "cubic-bezier(.22, 1, .36, 1)",
+        },
+      );
+    });
+
+    groupRectsRef.current = nextRects;
+  }, [filteredSections]);
 
   const selectedSearchEngine = searchEngines.find((engine) => engine.id === searchEngineId) || searchEngines[0];
 
@@ -327,47 +607,61 @@ function App() {
   };
 
   const handleDragStart = (event, site) => {
-    if (!isEditing) {
-      event.preventDefault();
-      return;
-    }
-
+    if (contentContextMenu) setContentContextMenu(null);
+    activeSiteDragRef.current = { draggedId: site.id, hasMoved: false, didPersist: false };
     const dragPreview = event.currentTarget.cloneNode(true);
     const rect = event.currentTarget.getBoundingClientRect();
     dragPreview.classList.add("drag-preview");
     dragPreview.style.width = `${rect.width}px`;
     dragPreview.style.height = `${rect.height}px`;
+    dragPreview.style.opacity = "1";
     document.body.appendChild(dragPreview);
     event.dataTransfer.setDragImage(dragPreview, event.clientX - rect.left, event.clientY - rect.top);
-    window.setTimeout(() => dragPreview.remove(), 0);
+    window.setTimeout(() => dragPreview.remove(), 120);
 
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", site.id);
-    lastDragMoveRef.current = { targetId: null, movedAt: 0 };
-    setDragState({ draggedId: site.id, overGroup: site.group, overId: site.id });
+    event.dataTransfer.setData("application/x-dazyhub-site", site.id);
+    lastDragMoveRef.current = { targetId: null, placement: null, movedAt: 0 };
+    setDragState({ draggedId: site.id, sourceGroup: site.group, overGroup: site.group, overId: site.id, placement: "before", hasMoved: false });
   };
 
-  const handleDragOver = (event, targetGroup, targetId = null) => {
-    if (!isEditing) return;
+  const handleDragOver = (event, targetGroup, targetId = null, placement = "before") => {
+    if (hasDragType(event, "application/x-dazyhub-group")) return;
 
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
 
     setDragState((current) => {
       const draggedId = current?.draggedId;
+
+      if (!draggedId) return current;
+
       const now = performance.now();
       const lastMove = lastDragMoveRef.current;
-      const canReorder = now - lastMove.movedAt > 220;
+      const canReorder = now - lastMove.movedAt > DRAG_REORDER_COOLDOWN_MS;
+      const sameHoverTarget = lastMove.targetId === targetId && lastMove.placement === placement;
 
-      if (draggedId && targetId && draggedId !== targetId && current?.overId !== targetId && canReorder) {
-        setSites((currentSites) => moveItem(currentSites, draggedId, targetGroup, targetId));
-        lastDragMoveRef.current = { targetId, movedAt: now };
+      if (draggedId && targetId && draggedId !== targetId && !sameHoverTarget && canReorder) {
+        rememberDragScrollPosition();
+        setSites((currentSites) => {
+          const nextSites = moveItem(currentSites, draggedId, targetGroup, targetId, placement);
+          latestSitesRef.current = nextSites;
+          return nextSites;
+        });
+        if (activeSiteDragRef.current?.draggedId === draggedId) {
+          activeSiteDragRef.current.hasMoved = true;
+        }
+        lastDragMoveRef.current = { targetId, placement, movedAt: now };
       }
 
       return {
         draggedId,
+        sourceGroup: current?.sourceGroup,
         overGroup: targetGroup,
         overId: targetId,
+        placement,
+        hasMoved: current?.hasMoved || Boolean(draggedId && targetId && draggedId !== targetId),
       };
     });
   };
@@ -377,29 +671,48 @@ function App() {
     const draggedId = event.dataTransfer.getData("text/plain") || dragState?.draggedId;
 
     if (!draggedId) {
-      lastDragMoveRef.current = { targetId: null, movedAt: 0 };
+      lastDragMoveRef.current = { targetId: null, placement: null, movedAt: 0 };
       setDragState(null);
       return;
     }
 
-    if (!targetId) {
-      setSites((currentSites) => currentSites.map((site) => (
-        site.id === draggedId ? { ...site, group: targetGroup } : site
-      )));
+    if (!targetId && dragState?.overId) {
+      if (!activeSiteDragRef.current?.didPersist) {
+        persistSettings({}, { includePage: true, page: { sites: latestSitesRef.current }, skipApply: true });
+        if (activeSiteDragRef.current) activeSiteDragRef.current.didPersist = true;
+      }
+    } else if (!targetId) {
+      skipNextCardAnimationRef.current = true;
+      rememberDragScrollPosition();
+      setSites((currentSites) => {
+        const nextSites = moveItemToGroupEnd(currentSites, draggedId, targetGroup);
+        if (nextSites === currentSites) return currentSites;
+        latestSitesRef.current = nextSites;
+        persistSettings({}, { includePage: true, page: { sites: nextSites }, skipApply: true });
+        activeSiteDragRef.current = { draggedId, hasMoved: true, didPersist: true };
+        return nextSites;
+      });
+    } else {
+      if (!activeSiteDragRef.current?.didPersist) {
+        persistSettings({}, { includePage: true, page: { sites: latestSitesRef.current }, skipApply: true });
+        if (activeSiteDragRef.current) activeSiteDragRef.current.didPersist = true;
+      }
     }
-    lastDragMoveRef.current = { targetId: null, movedAt: 0 };
+    lastDragMoveRef.current = { targetId: null, placement: null, movedAt: 0 };
+    skipNextCardAnimationRef.current = true;
     setDragState(null);
+    requestAnimationFrame(() => setDragState(null));
   };
 
   const handleDragEnd = () => {
-    lastDragMoveRef.current = { targetId: null, movedAt: 0 };
+    if (activeSiteDragRef.current?.hasMoved && !activeSiteDragRef.current.didPersist) {
+      persistSettings({}, { includePage: true, page: { sites: latestSitesRef.current }, skipApply: true });
+    }
+    activeSiteDragRef.current = null;
+    lastDragMoveRef.current = { targetId: null, placement: null, movedAt: 0 };
+    skipNextCardAnimationRef.current = true;
     setDragState(null);
-  };
-
-  const handleSave = () => {
-    setIsEditing(false);
-    setDragState(null);
-    lastDragMoveRef.current = { targetId: null, movedAt: 0 };
+    requestAnimationFrame(() => setDragState(null));
   };
 
   const handleAuthSuccess = (data) => {
@@ -412,17 +725,26 @@ function App() {
 
   const handleTagSizeChange = (nextTagSize) => {
     setTagSize(nextTagSize);
+    localStorage.setItem("dazyhub_tagSize", nextTagSize);
     persistSettings({ tagSize: nextTagSize });
   };
 
   const handleThemeChange = (nextTheme) => {
     setTheme(nextTheme);
+    localStorage.setItem("dazyhub_theme", nextTheme);
     persistSettings({ theme: nextTheme });
   };
 
   const handleSearchEngineChange = (nextSearchEngineId) => {
     setSearchEngineId(nextSearchEngineId);
+    localStorage.setItem("dazyhub_searchEngine", nextSearchEngineId);
     persistSettings({ searchEngine: nextSearchEngineId });
+  };
+
+  const handleConfirmDeleteChange = (nextConfirmDelete) => {
+    setConfirmDelete(nextConfirmDelete);
+    localStorage.setItem("dazyhub_confirmDelete", nextConfirmDelete ? "true" : "false");
+    persistSettings({ confirmDelete: nextConfirmDelete });
   };
 
   const handleAddSite = (site) => {
@@ -437,6 +759,7 @@ function App() {
       ), -1);
       const nextSites = [...currentSites];
       nextSites.splice(insertAfter + 1, 0, nextSite);
+      persistSettings({}, { includePage: true, page: { sites: nextSites, activeGroup: nextSite.group }, skipApply: true });
       return nextSites;
     });
     setActiveGroup(site.group || "all");
@@ -445,34 +768,185 @@ function App() {
   };
 
   const handleUpdateSite = (updatedSite) => {
-    setSites((currentSites) => currentSites.map((site) => (
-      site.id === updatedSite.id ? { ...site, ...updatedSite } : site
-    )));
+    setSites((currentSites) => {
+      const nextSites = currentSites.map((site) => (
+        site.id === updatedSite.id ? { ...site, ...updatedSite } : site
+      ));
+      persistSettings({}, { includePage: true, page: { sites: nextSites }, skipApply: true });
+      return nextSites;
+    });
     setEditingSite(null);
     setToast("网站已更新");
   };
 
   const handleDeleteSite = (siteId) => {
-    setSites((currentSites) => currentSites.filter((site) => site.id !== siteId));
+    setSites((currentSites) => {
+      const nextSites = currentSites.filter((site) => site.id !== siteId);
+      persistSettings({}, { includePage: true, page: { sites: nextSites }, skipApply: true });
+      return nextSites;
+    });
     setToast("网站已删除");
   };
 
-  const handleRenameGroup = ({ id, name, color }) => {
-    if (id === "ungrouped") {
-      setUngroupedName(name);
+  const requestDeleteSite = (siteId, siteName) => {
+    if (confirmDelete) {
+      setConfirmDialog({
+        message: `确认删除网站「${siteName}」？`,
+        onConfirm: () => handleDeleteSite(siteId),
+      });
     } else {
-      setSiteGroups((currentGroups) => currentGroups.map((group) => (
-        group.id === id ? { ...group, name, color: color || group.color } : group
-      )));
+      handleDeleteSite(siteId);
     }
+  };
+
+  const handleRenameGroup = ({ id, name, color }) => {
+    setSiteGroups((currentGroups) => {
+      const nextGroups = currentGroups.map((group) => (
+        group.id === id ? { ...group, name, color: color || group.color } : group
+      ));
+      persistSettings({}, { includePage: true, page: { siteGroups: nextGroups }, skipApply: true });
+      return nextGroups;
+    });
     setEditingGroup(null);
     setToast("分组已更新");
   };
 
-  const totalSites = sites.length;
+  const handleAddGroup = ({ name, color, parentId = null }) => {
+    const newId = `group-${Date.now()}`;
+    setSiteGroups((currentGroups) => {
+      const nextGroups = [...currentGroups, { id: newId, name, color, parentId, collapsed: false }];
+      persistSettings({}, { includePage: true, page: { siteGroups: nextGroups, activeGroup: newId }, skipApply: true });
+      return nextGroups;
+    });
+    setAddingGroup(false);
+    setActiveGroup(newId);
+    setToast("文件夹已添加");
+  };
+
+  const handleAddRootGroup = () => {
+    setAddingGroup({ parentId: null, parentName: "" });
+  };
+
+  const handleAddChildGroup = (group) => {
+    setAddingGroup({ parentId: group.id, parentName: group.name });
+    setSiteGroups((currentGroups) => {
+      const nextGroups = currentGroups.map((currentGroup) => (
+        currentGroup.id === group.id ? { ...currentGroup, collapsed: false } : currentGroup
+      ));
+      persistSettings({}, { includePage: true, page: { siteGroups: nextGroups }, skipApply: true });
+      return nextGroups;
+    });
+  };
+
+  const handleToggleGroup = (groupId) => {
+    setSiteGroups((currentGroups) => {
+      const nextGroups = currentGroups.map((group) => (
+        group.id === groupId ? { ...group, collapsed: !group.collapsed } : group
+      ));
+      persistSettings({}, { includePage: true, page: { siteGroups: nextGroups }, skipApply: true });
+      return nextGroups;
+    });
+  };
+
+  const handleDeleteGroup = (groupId) => {
+    const group = siteGroups.find((currentGroup) => currentGroup.id === groupId);
+    if (!group) return;
+
+    const removedIds = collectGroupDescendants(siteGroups, groupId);
+    removedIds.add(groupId);
+    const nextGroups = siteGroups.filter((currentGroup) => !removedIds.has(currentGroup.id));
+    const nextSites = sites.map((site) => (
+      removedIds.has(site.group) ? { ...site, group: "ungrouped" } : site
+    ));
+    const nextActiveGroup = removedIds.has(activeGroup) ? "all" : activeGroup;
+
+    setSiteGroups(nextGroups);
+    setSites(nextSites);
+    setActiveGroup(nextActiveGroup);
+    persistSettings({}, { includePage: true, page: { siteGroups: nextGroups, sites: nextSites, activeGroup: nextActiveGroup }, skipApply: true });
+    setEditingGroup(null);
+    setToast("文件夹已删除，里面的网站已移到未分组");
+  };
+
+  const handleActiveGroupChange = (nextActiveGroup) => {
+    setActiveGroup(nextActiveGroup);
+    persistSettings({}, { includePage: true, page: { activeGroup: nextActiveGroup }, skipApply: true });
+  };
+
+  const handleGroupDragStart = (event, group) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-dazyhub-group", group.id);
+    const dragPreview = event.currentTarget.cloneNode(true);
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragPreview.classList.add("group-drag-preview");
+    dragPreview.style.width = `${rect.width}px`;
+    dragPreview.style.height = `${rect.height}px`;
+    dragPreview.style.setProperty("--folder-depth", event.currentTarget.style.getPropertyValue("--folder-depth") || "0");
+    document.body.appendChild(dragPreview);
+    event.dataTransfer.setDragImage(dragPreview, event.clientX - rect.left, event.clientY - rect.top);
+    window.setTimeout(() => dragPreview.remove(), 0);
+    lastGroupReorderRef.current = { at: 0, targetId: null };
+    setGroupDragState({ draggedId: group.id, overId: group.id });
+  };
+
+  const handleGroupDragOver = (event, targetId) => {
+    if (!hasDragType(event, "application/x-dazyhub-group")) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "move";
+    const current = groupDragState;
+    const draggedId = current?.draggedId;
+    if (!draggedId || draggedId === targetId) {
+      setGroupDragState(current ? { ...current, overId: targetId } : null);
+      return;
+    }
+    const now = performance.now();
+    const lastMove = lastGroupReorderRef.current;
+    const canReorder = lastMove.targetId !== targetId || now - lastMove.at > GROUP_REORDER_COOLDOWN_MS;
+
+    if (!canReorder) {
+      setGroupDragState(current ? { ...current, overId: targetId } : null);
+      return;
+    }
+
+    animateGroupReorder(() => {
+      setSiteGroups((currentGroups) => {
+        const draggedIndex = currentGroups.findIndex((g) => g.id === draggedId);
+        const targetIndex = currentGroups.findIndex((g) => g.id === targetId);
+        if (draggedIndex === -1 || targetIndex === -1) return currentGroups;
+
+        const nextGroups = [...currentGroups];
+        const [draggedGroup] = nextGroups.splice(draggedIndex, 1);
+        nextGroups.splice(targetIndex, 0, draggedGroup);
+        return nextGroups;
+      });
+    });
+    lastGroupReorderRef.current = { at: now, targetId };
+    setGroupDragState({ ...current, overId: targetId });
+  };
+
+  const handleGroupDrop = (event, targetId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    persistSettings({}, { includePage: true, page: { siteGroups: latestSiteGroupsRef.current }, skipApply: true });
+    lastGroupReorderRef.current = { at: 0, targetId: null };
+    setGroupDragState(null);
+  };
+
+  const handleGroupDragEnd = () => {
+    if (groupDragState?.draggedId) {
+      persistSettings({}, { includePage: true, page: { siteGroups: latestSiteGroupsRef.current }, skipApply: true });
+    }
+    lastGroupReorderRef.current = { at: 0, targetId: null };
+    setGroupDragState(null);
+  };
+
+  const isDraggingSite = Boolean(dragState?.draggedId);
 
   return (
-    <div className="app" data-theme={theme}>
+    <div className={`app ${isDraggingSite ? "is-site-dragging" : ""}`} data-theme={theme}>
       {toast && (
         <div className="success-toast">
           <div className="toast-icon">
@@ -488,47 +962,88 @@ function App() {
       ) : (
         <>
           <aside className="sidebar">
-            <button
-              className={`brand ${currentUser ? "is-signed-in" : ""}`}
-              type="button"
-              onClick={() => (currentUser ? setIsProfileOpen(true) : setAuthMode("login"))}
-            >
-              {currentUser ? <Avatar user={currentUser} size="brand" /> : <div className="brand-mark guest"><img src="/wenhao.jpeg" alt="" /></div>}
+            <div className={`brand ${currentUser ? "is-signed-in" : ""}`}>
+              <button
+                className="brand-avatar"
+                type="button"
+                onClick={() => (currentUser ? setIsProfileOpen(true) : setAuthMode("login"))}
+              >
+                {currentUser ? <Avatar user={currentUser} size="brand" /> : <div className="brand-mark guest"><img src="/wenhao.jpeg" alt="" /></div>}
+              </button>
               <div className="brand-name">
                 <strong>{currentUser ? currentUser.displayName : "登录"}</strong>
                 {currentUser && <span>{currentUser.signature || (currentUser.email || "").split("@")[0]}</span>}
               </div>
-            </button>
+            </div>
 
             <div>
-              <div className="nav-section-title">分组</div>
-              <nav className="group-list" aria-label="网站分组">
-                <button
-                  className={`group-button ${activeGroup === "all" ? "is-active" : ""}`}
-                  type="button"
-                  onClick={() => setActiveGroup("all")}
+              <div className="nav-divider"></div>
+              <nav ref={groupListRef} className="group-list" aria-label="网站分组">
+                <div
+                  className="group-row root-row"
+                  data-group-id="all"
+                  style={{ "--folder-depth": 0 }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setIsSettingsOpen(false);
+                    setContentContextMenu({ ...menuPosition(event.clientX, event.clientY), type: "folder", groupId: "all" });
+                  }}
                 >
-                  <span><i className="group-dot" style={{ background: "#2f7890" }} />全部</span>
-                  <span className="group-count">{totalSites}</span>
-                </button>
-                {siteGroups.map((group) => (
-                  <div className="group-row" key={group.id}>
+                    <button
+                      className="folder-toggle"
+                      type="button"
+                      title={allGroupCollapsed ? "展开文件夹" : "折叠文件夹"}
+                      aria-label={allGroupCollapsed ? "展开全部" : "折叠全部"}
+                      onClick={() => setAllGroupCollapsed(!allGroupCollapsed)}
+                    >
+                      {allGroupCollapsed ? <ChevronRight /> : <ChevronDown />}
+                    </button>
+                    <button
+                      className={`group-button ${activeGroup === "all" ? "is-active" : ""}`}
+                      type="button"
+                      onClick={() => handleActiveGroupChange("all")}
+                    >
+                      <span>{allGroupCollapsed ? <Folder /> : <FolderOpen />}全部</span>
+                    </button>
+                  </div>
+                {!allGroupCollapsed && foldersUnderAll.map((group) => (
+                  <div
+                    className={`group-row ${groupDragState?.draggedId === group.id ? "is-dragging" : ""} ${groupDragState?.overId === group.id ? "is-drop-target" : ""}`}
+                    key={group.id}
+                    data-group-id={group.id}
+                    style={{ "--folder-depth": group.displayDepth }}
+                    draggable
+                    onDragStart={(e) => handleGroupDragStart(e, group)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setIsSettingsOpen(false);
+                      setContentContextMenu({ ...menuPosition(event.clientX, event.clientY), type: "folder", groupId: group.id });
+                    }}
+                    onDragOver={(e) => handleGroupDragOver(e, group.id)}
+                    onDrop={(e) => handleGroupDrop(e, group.id)}
+                    onDragEnd={handleGroupDragEnd}
+                  >
+                    {group.children?.length ? (
+                      <button
+                        className="folder-toggle"
+                        type="button"
+                        title={group.collapsed ? "展开文件夹" : "折叠文件夹"}
+                        aria-label={group.collapsed ? `展开${group.name}` : `折叠${group.name}`}
+                        onClick={() => handleToggleGroup(group.id)}
+                      >
+                        {group.collapsed ? <ChevronRight /> : <ChevronDown />}
+                      </button>
+                    ) : (
+                      <span className="folder-toggle folder-toggle-placeholder" aria-hidden="true" />
+                    )}
                     <button
                       className={`group-button ${activeGroup === group.id ? "is-active" : ""}`}
                       type="button"
-                      onClick={() => setActiveGroup(group.id)}
+                      onClick={() => handleActiveGroupChange(group.id)}
                     >
-                      <span><i className="group-dot" style={{ background: group.color }} />{group.name}</span>
-                      <span className="group-count">{groupCounts[group.id]}</span>
-                    </button>
-                    <button
-                      className="group-edit"
-                      type="button"
-                      title={`编辑${group.name}`}
-                      aria-label={`编辑${group.name}`}
-                      onClick={() => setEditingGroup(group)}
-                    >
-                      <Pencil />
+                      <span>{group.collapsed ? <Folder style={{ color: group.color }} /> : <FolderOpen style={{ color: group.color }} />}{group.name}</span>
                     </button>
                   </div>
                 ))}
@@ -540,7 +1055,6 @@ function App() {
                 <strong>收藏概览</strong>
                 <div className="mini-row"><span>网站</span><b>{sites.length}</b></div>
                 <div className="mini-row"><span>分组</span><b>{siteGroups.length}</b></div>
-                <div className="mini-row"><span>模式</span><b>{isEditing ? "编辑" : "浏览"}</b></div>
               </div>
               {currentUser?.role === "admin" && (
                 <button
@@ -622,35 +1136,39 @@ function App() {
             >
               <Settings />
             </button>
-            <button
-              className={`icon-button ${isEditing ? "is-active" : ""}`}
-              type="button"
-              title={isEditing ? "保存" : "编辑"}
-              aria-label={isEditing ? "保存" : "编辑"}
-              onClick={() => (isEditing ? handleSave() : setIsEditing(true))}
-            >
-              {isEditing ? <Save /> : <Pencil />}
-            </button>
 
           </div>
         </header>
 
-        <div className={`content ${isEditing ? "is-editing" : ""}`}>
+        <div
+          className="content"
+          onContextMenu={(event) => {
+            if (event.target.closest(".shortcut-card, .site-card, .context-menu, .section-title-edit, input, select, textarea, .toolbar, .settings-popover, .modal-backdrop")) return;
+            event.preventDefault();
+            const sectionEl = event.target.closest("[data-section-id]");
+            const groupId = sectionEl?.dataset?.sectionId || "ungrouped";
+            setIsSettingsOpen(false);
+            setContentContextMenu({ ...menuPosition(event.clientX, event.clientY), type: "content", groupId });
+          }}
+        >
           {filteredSections.map((section) => (
             <SiteSection
               key={section.id}
               section={section}
-              isEditing={isEditing}
               tagSize={tagSize}
               dragState={dragState}
+              groupDragState={groupDragState}
               onDragStart={handleDragStart}
               onDragOver={handleDragOver}
               onDragEnd={handleDragEnd}
               onDrop={handleDrop}
-              onAddSite={(groupId) => setAddSiteGroup(groupId)}
+              onGroupDragStart={handleGroupDragStart}
+              onGroupDragOver={handleGroupDragOver}
+              onGroupDrop={handleGroupDrop}
+              onGroupDragEnd={handleGroupDragEnd}
               onRenameGroup={handleRenameGroup}
               onEditSite={setEditingSite}
-              onDeleteSite={handleDeleteSite}
+              onDeleteSite={(site) => requestDeleteSite(site.id, site.name)}
             />
           ))}
         </div>
@@ -706,6 +1224,15 @@ function App() {
           onSubmit={handleRenameGroup}
         />
       )}
+      {addingGroup && (
+        <GroupEditorDialog
+          group={{ id: null, name: "", color: "#5fa87b", parentId: addingGroup.parentId || null }}
+          onClose={() => setAddingGroup(false)}
+          onSubmit={handleAddGroup}
+          isNew
+          parentName={addingGroup.parentName}
+        />
+      )}
       {isSettingsOpen && (
         <div className="settings-backdrop" role="presentation" onMouseDown={() => setIsSettingsOpen(false)}>
           <div className="settings-popover" role="dialog" aria-modal="true" aria-label="设置" onMouseDown={(event) => event.stopPropagation()}>
@@ -715,13 +1242,18 @@ function App() {
                 <X />
               </button>
             </div>
-            <label className="setting-row">
+            <div className="setting-row">
               <span>标签大小</span>
-              <select value={tagSize} onChange={(event) => handleTagSizeChange(event.target.value)}>
-                <option value="short">短</option>
-                <option value="long">长</option>
-              </select>
-            </label>
+              <SettingSelect
+                value={tagSize}
+                options={[
+                  { value: "short", label: "短" },
+                  { value: "long", label: "长" },
+                ]}
+                onChange={handleTagSizeChange}
+                ariaLabel="标签大小"
+              />
+            </div>
             <div className="setting-row">
               <span>主题模式</span>
               <div className="theme-options" role="radiogroup" aria-label="主题模式">
@@ -761,9 +1293,31 @@ function App() {
                 ))}
               </div>
             </div>
+            <div className="setting-row">
+              <span>删除确认</span>
+              <button
+                className={`toggle-btn ${confirmDelete ? "is-active" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={confirmDelete}
+                onClick={() => handleConfirmDeleteChange(!confirmDelete)}
+              >
+                <span className="toggle-track" />
+              </button>
+            </div>
             {currentUser && (
               <button
-                className="setting-row logout-button"
+                className="setting-action"
+                type="button"
+                onClick={() => { setIsSettingsOpen(false); setIsPasswordChangeOpen(true); }}
+              >
+                <KeyRound />
+                <span>修改密码</span>
+              </button>
+            )}
+            {currentUser && (
+              <button
+                className="setting-action danger"
                 type="button"
                 onClick={() => { clearToken(); setCurrentUser(null); setIsSettingsOpen(false); }}
               >
@@ -773,6 +1327,64 @@ function App() {
             )}
           </div>
         </div>
+      )}
+      {isPasswordChangeOpen && currentUser && (
+        <PasswordChangeDialog
+          onClose={() => setIsPasswordChangeOpen(false)}
+          onSuccess={setToast}
+        />
+      )}
+      {confirmDialog && (
+        <ConfirmDialog
+          message={confirmDialog.message}
+          onConfirm={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+      {contentContextMenu && (
+        contentContextMenu.type === "folder" ? (
+          <FolderContextMenu
+            x={contentContextMenu.x}
+            y={contentContextMenu.y}
+            group={siteGroups.find((group) => group.id === contentContextMenu.groupId) || { id: contentContextMenu.groupId, name: contentContextMenu.groupId === "all" ? "全部" : "未分组" }}
+            onAddSite={() => {
+              setAddSiteGroup(contentContextMenu.groupId === "all" ? "ungrouped" : contentContextMenu.groupId);
+              setContentContextMenu(null);
+            }}
+            onAddChild={() => {
+              const group = siteGroups.find((currentGroup) => currentGroup.id === contentContextMenu.groupId);
+              if (group) handleAddChildGroup(group);
+              setContentContextMenu(null);
+            }}
+            onRename={() => {
+              const group = siteGroups.find((currentGroup) => currentGroup.id === contentContextMenu.groupId);
+              if (group) setEditingGroup(group);
+              setContentContextMenu(null);
+            }}
+            onDelete={() => {
+              handleDeleteGroup(contentContextMenu.groupId);
+              setContentContextMenu(null);
+            }}
+          />
+        ) : (
+          <ContentContextMenu
+            x={contentContextMenu.x}
+            y={contentContextMenu.y}
+            groupName={
+              contentContextMenu.groupId === "ungrouped"
+                ? siteGroups.find((g) => g.id === "ungrouped")?.name || "未分组"
+                : siteGroups.find((group) => group.id === contentContextMenu.groupId)?.name || "当前分组"
+            }
+            onAddSite={() => {
+              setAddSiteGroup(contentContextMenu.groupId);
+              setContentContextMenu(null);
+            }}
+            onAddGroup={() => {
+              setAddingGroup({ parentId: contentContextMenu.groupId === "ungrouped" ? null : contentContextMenu.groupId, parentName: contentContextMenu.groupId === "ungrouped" ? "" : siteGroups.find((group) => group.id === contentContextMenu.groupId)?.name || "" });
+              setContentContextMenu(null);
+            }}
+          />
+        )
       )}
     </div>
   );
@@ -787,6 +1399,278 @@ function Avatar({ user, size = "normal" }) {
     <span className={`avatar fallback ${size}`} aria-hidden="true">
       {(user.displayName || (user.email || "").split("@")[0] || "D").slice(0, 1).toUpperCase()}
     </span>
+  );
+}
+
+function SettingSelect({ value, options, onChange, ariaLabel }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const wrapperRef = useRef(null);
+  const selectedOption = options.find((option) => option.value === value) || options[0];
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handlePointerDown = (event) => {
+      if (!wrapperRef.current?.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen]);
+
+  const chooseOption = (nextValue) => {
+    onChange(nextValue);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className={`setting-select ${isOpen ? "is-open" : ""}`} ref={wrapperRef}>
+      <button
+        className="setting-select-trigger"
+        type="button"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        onClick={() => setIsOpen((current) => !current)}
+      >
+        <span>{selectedOption.label}</span>
+        <ChevronDown />
+      </button>
+      {isOpen && (
+        <div className="setting-select-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => (
+            <button
+              key={option.value}
+              className={`setting-select-option ${option.value === value ? "is-selected" : ""}`}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              onClick={() => chooseOption(option.value)}
+            >
+              <span className="setting-select-check">{option.value === value ? "✓" : ""}</span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContentContextMenu({ x, y, groupName, onAddSite, onAddGroup }) {
+  const stopMenuEvent = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  return (
+    <div
+      className="context-menu content-context-menu"
+      style={{ left: x, top: y }}
+      role="menu"
+      aria-label="内容操作"
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={stopMenuEvent}
+    >
+      <div className="context-menu-label">{groupName}</div>
+      <button type="button" role="menuitem" onClick={onAddSite}>
+        <Plus />
+        <span>新增标签</span>
+      </button>
+      <button type="button" role="menuitem" onClick={onAddGroup}>
+        <FolderPlus />
+        <span>添加文件夹</span>
+      </button>
+    </div>
+  );
+}
+
+function FolderContextMenu({ x, y, group, onAddSite, onAddChild, onRename, onDelete }) {
+  const stopMenuEvent = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const [showNewMenu, setShowNewMenu] = useState(false);
+  const isAllGroup = group?.id === "all";
+
+  return (
+    <div
+      className="context-menu folder-context-menu"
+      style={{ left: x, top: y }}
+      role="menu"
+      aria-label="文件夹操作"
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={stopMenuEvent}
+    >
+      <div
+        className="context-menu-item-with-submenu"
+        onMouseEnter={() => setShowNewMenu(true)}
+        onMouseLeave={() => setShowNewMenu(false)}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          className="has-submenu"
+        >
+          <Plus />
+          <span>新建</span>
+          <ChevronRight className="submenu-arrow" />
+        </button>
+        {showNewMenu && (
+          <div className="context-menu submenu">
+            <button type="button" role="menuitem" onClick={onAddSite}>
+              <Plus />
+              <span>标签</span>
+            </button>
+            <button type="button" role="menuitem" onClick={onAddChild}>
+              <FolderPlus />
+              <span>文件夹</span>
+            </button>
+          </div>
+        )}
+      </div>
+      <button type="button" role="menuitem" onClick={onRename}>
+        <Pencil />
+        <span>重命名</span>
+      </button>
+      <button
+        className={`danger ${isAllGroup ? "muted" : ""}`}
+        type="button"
+        role="menuitem"
+        onClick={onDelete}
+      >
+        <Trash2 />
+        <span>删除</span>
+      </button>
+    </div>
+  );
+}
+
+function ConfirmDialog({ message, onConfirm, onCancel }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal confirm-modal">
+        <div className="confirm-content">
+          <p>{message}</p>
+        </div>
+        <div className="confirm-actions">
+          <button className="action-button" type="button" onClick={onCancel}>
+            取消
+          </button>
+          <button className="action-button danger" type="button" onClick={onConfirm}>
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PasswordChangeDialog({ onClose, onSuccess }) {
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+
+    if (newPassword.length < 6) {
+      setError("新密码长度至少6位");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError("两次输入的密码不一致");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await changePassword(oldPassword, newPassword);
+      onSuccess("密码已更新");
+      onClose();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="modal password-modal" onSubmit={handleSubmit}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Security</p>
+            <h2>修改密码</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
+            <X />
+          </button>
+        </div>
+
+        <label className="field">
+          <span>旧密码</span>
+          <input
+            type="password"
+            value={oldPassword}
+            onChange={(e) => setOldPassword(e.target.value)}
+            autoFocus
+            required
+            minLength={6}
+            placeholder="请输入当前密码"
+          />
+        </label>
+        <label className="field">
+          <span>新密码</span>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            required
+            minLength={6}
+            maxLength={120}
+            placeholder="至少6位"
+          />
+        </label>
+        <label className="field">
+          <span>确认新密码</span>
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            required
+            minLength={6}
+            maxLength={120}
+            placeholder="再次输入新密码"
+          />
+          {confirmPassword && newPassword !== confirmPassword && (
+            <span className="field-hint">两次输入的密码不符</span>
+          )}
+        </label>
+
+        {error && <div className="form-error">{error}</div>}
+
+        <button className="action-button wide" type="submit" disabled={loading}>
+          <Save />
+          <span>{loading ? "保存中..." : "保存密码"}</span>
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -976,6 +1860,13 @@ function ProfileDialog({ user, onClose, onUserChange, onSuccess }) {
   const [cropFile, setCropFile] = useState(null);
   const fileInputRef = useRef(null);
 
+  const handleLogout = () => {
+    clearToken();
+    onUserChange(null);
+    onClose();
+    onSuccess("已注销登录");
+  };
+
   const saveProfile = async (event) => {
     event.preventDefault();
     setError("");
@@ -1075,6 +1966,11 @@ function ProfileDialog({ user, onClose, onUserChange, onSuccess }) {
         <button className="action-button wide" type="submit" disabled={loading}>
           <Save />
           <span>{loading ? "保存中..." : "保存资料"}</span>
+        </button>
+
+        <button className="action-button wide logout" type="button" onClick={handleLogout}>
+          <LogOut />
+          <span>注销登录</span>
         </button>
       </form>
 
@@ -1269,7 +2165,7 @@ function SiteEditorDialog({ groups: siteGroups, initialGroup = "ungrouped", mode
     iconUrl: site?.iconUrl || "",
   });
   const [error, setError] = useState("");
-  const allGroups = [{ id: "ungrouped", name: "未分组" }, ...siteGroups];
+  const allGroups = flattenFolderTree(buildFolderTree(siteGroups));
   const detectedIcon = form.url ? favicon(form.url) : "";
   const previewIcon = form.iconUrl || detectedIcon;
   const isEdit = mode === "edit";
@@ -1384,7 +2280,7 @@ function SiteEditorDialog({ groups: siteGroups, initialGroup = "ungrouped", mode
           <span>分组</span>
           <select value={form.group} onChange={(event) => setForm({ ...form, group: event.target.value })}>
             {allGroups.map((group) => (
-              <option key={group.id} value={group.id}>{group.name}</option>
+              <option key={group.id} value={group.id}>{`${"　".repeat(group.depth || 0)}${group.name}`}</option>
             ))}
           </select>
         </label>
@@ -1400,10 +2296,20 @@ function SiteEditorDialog({ groups: siteGroups, initialGroup = "ungrouped", mode
   );
 }
 
-function GroupEditorDialog({ group, onClose, onSubmit }) {
+function GroupEditorDialog({ group, onClose, onSubmit, isNew, parentName = "" }) {
   const [name, setName] = useState(group.name);
   const [color, setColor] = useState(group.color || "#5fa87b");
   const [error, setError] = useState("");
+  const presetColors = ["#2f7890", "#5fa87b", "#f0a45e", "#dc7d76", "#818cf8", "#bd8736"];
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -1414,16 +2320,17 @@ function GroupEditorDialog({ group, onClose, onSubmit }) {
       return;
     }
 
-    onSubmit({ id: group.id, name: nextName, color });
+    onSubmit({ id: group.id, name: nextName, color, parentId: group.parentId || null });
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal group-modal" onSubmit={handleSubmit}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <form className="modal group-modal" onSubmit={handleSubmit} onMouseDown={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <p className="eyebrow">Group</p>
-            <h2>编辑分组</h2>
+            <h2>{isNew ? "添加文件夹" : "编辑文件夹"}</h2>
+            {isNew && parentName && <span className="modal-subtitle">添加到 {parentName}</span>}
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="关闭">
             <X />
@@ -1454,11 +2361,24 @@ function GroupEditorDialog({ group, onClose, onSubmit }) {
           </div>
         </label>
 
+        <div className="color-preset-row" aria-label="常用颜色">
+          {presetColors.map((preset) => (
+            <button
+              key={preset}
+              className={`color-preset ${preset.toLowerCase() === color.toLowerCase() ? "is-active" : ""}`}
+              type="button"
+              aria-label={`选择颜色${preset}`}
+              style={{ background: preset }}
+              onClick={() => setColor(preset)}
+            />
+          ))}
+        </div>
+
         {error && <div className="form-error">{error}</div>}
 
         <button className="action-button wide" type="submit">
-          <Save />
-          <span>保存分组</span>
+          {isNew ? <Plus /> : <Save />}
+          <span>{isNew ? "添加文件夹" : "保存文件夹"}</span>
         </button>
       </form>
     </div>
@@ -1467,23 +2387,24 @@ function GroupEditorDialog({ group, onClose, onSubmit }) {
 
 function SiteSection({
   section,
-  isEditing,
   tagSize,
   dragState,
+  groupDragState,
   onDragStart,
   onDragOver,
   onDragEnd,
   onDrop,
-  onAddSite,
+  onGroupDragStart,
+  onGroupDragOver,
+  onGroupDrop,
+  onGroupDragEnd,
   onRenameGroup,
   onEditSite,
   onDeleteSite,
 }) {
-  const cardClass = tagSize === "short" ? "shortcut-card" : "site-card";
   const gridClass = tagSize === "short" ? "tag-grid tag-grid-short" : "tag-grid tag-grid-long";
   const [groupName, setGroupName] = useState(section.name);
   const [isEditingGroupName, setIsEditingGroupName] = useState(false);
-  const titleInputWidth = `${Math.max(4.5, Math.min(Array.from(groupName).length + 1.5, 24))}em`;
 
   useEffect(() => {
     setGroupName(section.name);
@@ -1506,17 +2427,34 @@ function SiteSection({
 
   return (
     <section
-      className={`group-section ${dragState?.overGroup === section.id && !dragState.overId ? "is-drop-target" : ""}`}
-      onDragOver={(event) => onDragOver(event, section.id)}
-      onDrop={(event) => onDrop(event, section.id)}
+      className={`group-section ${dragState?.overGroup === section.id && !dragState.overId ? "is-drop-target" : ""} ${groupDragState?.draggedId === section.id ? "is-group-dragging" : ""} ${groupDragState?.overId === section.id ? "is-group-drop-target" : ""}`}
+      data-section-id={section.id}
+      data-group-section-id={section.id}
+      onDragOver={(e) => {
+        if (hasDragType(e, "application/x-dazyhub-group")) {
+          e.preventDefault();
+          onGroupDragOver?.(e, section.id);
+        } else {
+          onDragOver?.(e, section.id);
+        }
+      }}
+      onDrop={(e) => {
+        if (hasDragType(e, "application/x-dazyhub-group")) {
+          e.preventDefault();
+          onGroupDrop?.(e, section.id);
+        } else {
+          onDrop?.(e, section.id);
+        }
+      }}
+      onDragEnd={() => onGroupDragEnd?.()}
     >
       <div className="section-heading">
         <div className="section-title-slot">
-          {isEditing && isEditingGroupName ? (
+          {isEditingGroupName ? (
             <input
               className="section-title-edit"
               value={groupName}
-              style={{ width: titleInputWidth }}
+              size={Math.max(6, groupName.length + 2)}
               aria-label={`编辑${section.name}分组名称`}
               maxLength={24}
               onChange={(event) => setGroupName(event.target.value)}
@@ -1536,7 +2474,7 @@ function SiteSection({
               }}
               autoFocus
             />
-          ) : isEditing ? (
+          ) : (
             <button
               className="section-title-button"
               type="button"
@@ -1546,20 +2484,28 @@ function SiteSection({
             >
               {section.name}
             </button>
-          ) : (
-            <h2>{section.name}</h2>
           )}
         </div>
+        <button
+          className="section-drag-handle"
+          type="button"
+          draggable
+          title="拖动排序"
+          aria-label="拖动排序"
+          onDragStart={(e) => { e.stopPropagation(); onGroupDragStart?.(e, section); }}
+        >
+          <Menu />
+        </button>
       </div>
       <div className={gridClass}>
         {section.items.map((site) => (
           <SiteCard
             key={site.id}
             site={site}
-            isEditing={isEditing}
             tagSize={tagSize}
             isDragging={dragState?.draggedId === site.id}
             isSwapTarget={dragState?.overId === site.id && dragState?.draggedId !== site.id}
+            dropPlacement={dragState?.overId === site.id ? dragState?.placement : null}
             onDragStart={onDragStart}
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
@@ -1568,17 +2514,6 @@ function SiteSection({
             onDelete={onDeleteSite}
           />
         ))}
-        {isEditing && (
-          <button
-            className={`${cardClass} add-site-card`}
-            type="button"
-            title={`添加到${section.name}`}
-            aria-label={`添加到${section.name}`}
-            onClick={() => onAddSite(section.id)}
-          >
-            <Plus />
-          </button>
-        )}
       </div>
     </section>
   );
@@ -1586,10 +2521,10 @@ function SiteSection({
 
 function SiteCard({
   site,
-  isEditing,
   tagSize,
   isDragging,
   isSwapTarget,
+  dropPlacement,
   onDragStart,
   onDragOver,
   onDragEnd,
@@ -1615,6 +2550,21 @@ function SiteCard({
 
   const closeContextMenu = () => setContextMenu(null);
 
+  const handleCardDragOver = (event) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const placement = tagSize === "short"
+      ? (event.clientX > rect.left + rect.width / 2 ? "after" : "before")
+      : (event.clientY > rect.top + rect.height / 2 ? "after" : "before");
+
+    onDragOver(event, site.group, site.id, placement);
+  };
+
+  const handleCardDrop = (event) => {
+    event.stopPropagation();
+    onDrop(event, site.group, site.id);
+  };
+
   useEffect(() => {
     if (!contextMenu) return;
     const handleDown = (e) => {
@@ -1633,39 +2583,31 @@ function SiteCard({
     <>
       <a
         ref={cardRef}
-        className={`${isShort ? "shortcut-card" : "site-card"} ${isEditing ? "can-drag" : ""} ${isDragging ? "is-dragging" : ""} ${isSwapTarget ? "is-swap-target" : ""}`}
+        className={`${isShort ? "shortcut-card" : "site-card"} ${isDragging ? "is-dragging" : ""} ${isSwapTarget ? "is-swap-target" : ""} ${dropPlacement === "after" ? "is-drop-after" : ""}`}
         data-site-id={site.id}
-        href={isEditing ? undefined : href}
-        target={isEditing ? undefined : "_blank"}
-        rel={isEditing ? undefined : "noreferrer"}
-        draggable={isEditing}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        draggable
         onDragStart={(event) => onDragStart(event, site)}
-        onDragOver={(event) => onDragOver(event, site.group, site.id)}
+        onDragOver={handleCardDragOver}
         onDragEnd={onDragEnd}
-        onDrop={(event) => onDrop(event, site.group, site.id)}
+        onDrop={handleCardDrop}
         onContextMenu={handleContextMenu}
       >
-        {isEditing && (
-          <div className="site-card-move-indicator">
-            <GripVertical />
-          </div>
-        )}
         <SiteIcon site={site} />
         {isShort ? (
           <strong>{site.name}</strong>
         ) : (
-          <div className="site-name">
-            <strong>{site.name}</strong>
-            <span>{site.url}</span>
-          </div>
+          <strong className="site-name-long">{site.name}</strong>
         )}
       </a>
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={stopCardAction} onClick={stopCardAction}>
-          <button type="button" onClick={() => { onEdit(site); closeContextMenu(); }}>
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={(e) => e.stopPropagation()}>
+          <button type="button" onClick={(e) => { e.stopPropagation(); onEdit(site); closeContextMenu(); }}>
             <Pencil /> 编辑
           </button>
-          <button type="button" className="danger" onClick={() => { onDelete(site.id); closeContextMenu(); }}>
+          <button type="button" className="danger" onClick={(e) => { e.stopPropagation(); onDelete(site); closeContextMenu(); }}>
             <Trash2 /> 删除
           </button>
         </div>

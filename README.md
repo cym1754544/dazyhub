@@ -12,7 +12,7 @@ mvn spring-boot:run
 后端默认运行在 `http://localhost:8080`。数据库配置从 `backend/src/main/resources/application.properties` 读取，当前默认值是：
 
 ```text
-DB_URL=jdbc:postgresql://192.168.100.168:5433/dazyhub
+DB_URL=jdbc:postgresql://192.168.100.168:5433/dazyhub?sslmode=disable&socketFactory=com.dazyhub.config.NioSocketFactory
 DB_USERNAME=postgres
 DB_PASSWORD=cym1754544
 ```
